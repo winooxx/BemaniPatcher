@@ -1,25 +1,37 @@
 (function(window, document) {
 "use strict";
 
+// form labels often need unique IDs - this can be used to generate some
+window.DllPatcher_uniqueid = 0;
+var createID = function() {
+    window.DllPatcher_uniqueid++;
+    return "dllpatch_" + window.DllPatcher_uniqueid;
+}
+
 // Each unique kind of patch should have createUI, validatePatch, applyPatch,
 // updateUI
 
 var StandardPatch = function(options) {
     this.name = options.name;
-    this.shortname = options.shortname;
     this.patches = options.patches;
+    this.tooltip = options.tooltip;
 };
 
 StandardPatch.prototype.createUI = function(parent) {
-    var id = this.shortname;
+    var id = createID();
     var label = this.name;
-    parent.append('<div class="patch"><input type="checkbox" id="' + id + '"><label for="' + id + '">' + label + '</label></div>');
+    var patch = $('<div>', {'class' : 'patch'});
+    this.checkbox = $('<input type="checkbox" id="' + id + '">')[0];
+    patch.append(this.checkbox);
+    patch.append('<label for="' + id + '">' + label + '</label>');
+    if(this.tooltip) {
+        patch.append('<div class="tooltip">' + this.tooltip + '</div>');
+    }
+    parent.append(patch);
 };
 
 StandardPatch.prototype.updateUI = function(file) {
-    var id = this.shortname;
-    var elem = document.getElementById(id);
-    elem.checked = this.checkPatchBytes(file) == "on";
+    this.checkbox.checked = this.checkPatchBytes(file) == "on";
 };
 
 StandardPatch.prototype.validatePatch = function(file) {
@@ -34,10 +46,7 @@ StandardPatch.prototype.validatePatch = function(file) {
 };
 
 StandardPatch.prototype.applyPatch = function(file) {
-    var id = this.shortname;
-    var enabled = document.getElementById(id).checked;
-    this.replaceAll(file, enabled);
-    return enabled ? this.shortname : "";
+    this.replaceAll(file, this.checkbox.checked);
 };
 
 StandardPatch.prototype.replaceAll = function(file, featureOn) {
@@ -76,19 +85,30 @@ StandardPatch.prototype.checkPatchBytes = function(file) {
 // The DEFAULT state is always the 1st element in the patches array
 var UnionPatch = function(options) {
     this.name = options.name;
-    this.shortname = options.shortname;
     this.offset = options.offset;
     this.patches = options.patches;
 };
 
 UnionPatch.prototype.createUI = function(parent) {
+    this.radios = [];
+    var radio_id = createID();
+    
     var container = $("<div>", {"class": "patch-union"});
     container.append('<span class="patch-union-title">' + this.name + ':</span>');
     for(var i = 0; i < this.patches.length; i++) {
         var patch = this.patches[i];
-        var id = this.shortname + '-' + patch.shortname;
+        var id = createID();
         var label = patch.name;
-        container.append('<div class="patch"><input type="radio" id="' + id + '" name="' + this.shortname + '"><label for="' + id + '">' + label + '</label></div>');
+        var patchDiv = $('<div>', {'class' : 'patch'});
+        var radio = $('<input type="radio" id="' + id + '" name="' + radio_id + '">')[0];
+        this.radios.push(radio);
+        
+        patchDiv.append(radio);
+        patchDiv.append('<label for="' + id + '">' + label + '</label>');
+        if(patch.tooltip) {
+            patchDiv.append('<div class="tooltip">' + patch.tooltip + '</div>');
+        }
+        container.append(patchDiv);
     }
     parent.append(container);
 };
@@ -96,12 +116,12 @@ UnionPatch.prototype.createUI = function(parent) {
 UnionPatch.prototype.updateUI = function(file) {
     for(var i = 0; i < this.patches.length; i++) {
         if(bytesMatch(file, this.offset, this.patches[i].patch)) {
-            document.getElementById(this.shortname + '-' + this.patches[i].shortname).checked = true;
+            this.radios[i].checked = true;
             return;
         }
     }
     // Default fallback
-    document.getElementById(this.shortname + '-' + this.patches[0].shortname).checked = true;
+    this.radios[0].checked = true;
 };
 
 UnionPatch.prototype.validatePatch = function(file) {
@@ -116,21 +136,19 @@ UnionPatch.prototype.validatePatch = function(file) {
 
 UnionPatch.prototype.applyPatch = function(file) {
     var patch = this.getSelected();
-    var name = this.shortname + patch.shortname;
     replace(file, this.offset, patch.patch);
-    return patch.shortname == "default" ? "" : name;
 };
 
 UnionPatch.prototype.getSelected = function() {
     for(var i = 0; i < this.patches.length; i++) {
-        if(document.getElementById(this.shortname + '-' + this.patches[i].shortname).checked) {
+        if(this.radios[i].checked) {
             return this.patches[i];
         }
     }
     return null;
 }
 
-var DllPatcher = function(fname, args) {
+var DllPatcher = function(fname, args, description) {
     this.mods = [];
     for(var i = 0; i < args.length; i++) {
         var mod = args[i];
@@ -143,6 +161,7 @@ var DllPatcher = function(fname, args) {
         }
     }
     this.filename = fname;
+    this.description = description;
     this.createUI();
     this.loadPatchUI();
 };
@@ -150,45 +169,51 @@ var DllPatcher = function(fname, args) {
 DllPatcher.prototype.createUI = function() {
     var self = this;
     var container = $("<div>", {"class": "patchContainer"});
-    container.html('<h3>' + this.filename + '.dll</h3>');
-    
-    container.on('drag dragstart dragend dragover dragenter dragleave drop', function(e) {
-        e.preventDefault();
-        e.stopPropagation();
+    var header = this.filename + '.dll';
+    if(this.description) {
+        header += ' (' + this.description + ')';
+    }
+    container.html('<h3>' + header + '</h3>');
+
+    $('html').on('dragover dragenter', function() {
+        container.addClass('dragover');
+        return true;
     })
-    .on('drop', function(e) {
+    .on('dragleave dragend drop', function() {
+        container.removeClass('dragover');
+        return true;
+    })
+    .on('dragover dragenter dragleave dragend drop', function(e) {
+        e.preventDefault();
+    });
+    
+    container.on('drop', function(e) {
         var files = e.originalEvent.dataTransfer.files;
         if(files && files.length > 0)
             self.loadFile(files[0]);
     })
-    .on('dragover dragenter', function() {
-        container.addClass('dragover');
-    })
-    .on('dragleave dragend drop', function() {
-        container.removeClass('dragover');
-    });
-    
+
     this.fileInput = $("<input>",
         {"class": "fileInput",
          "id" : this.filename + '-file',
          "type" : 'file'});
     var label = $("<label>", {"class": "fileLabel", "for": this.filename + '-file'});
     label.html('<strong>Choose a file</strong> or drag and drop.');
-    
+
     this.fileInput.on('change', function(e) {
         if(this.files && this.files.length > 0)
             self.loadFile(this.files[0]);
     });
-    
+
     this.successDiv = $("<div>", {"class": "success"});
     this.errorDiv = $("<div>", {"class": "error"});
     this.patchDiv = $("<div>", {"class": "patches"});
-    
+
     var saveButton = $("<button disabled>");
     saveButton.text('Load DLL First');
     saveButton.on('click', this.saveDll.bind(this));
     this.saveButton = saveButton;
-    
+
     container.append(this.fileInput);
     container.append(label);
     container.append(this.successDiv);
@@ -201,7 +226,7 @@ DllPatcher.prototype.createUI = function() {
 DllPatcher.prototype.loadFile = function(file) {
     var reader = new FileReader();
     var self = this;
-    
+
     reader.onload = function(e) {
         self.dllFile = new Uint8Array(e.target.result);
         if(self.validatePatches()) {
@@ -224,16 +249,12 @@ DllPatcher.prototype.saveDll = function() {
     if(!this.dllFile || !this.mods || !this.filename)
         return;
     var fname = this.filename;
-    
+
     for(var i = 0; i < this.mods.length; i++) {
-        var enabledStr = this.mods[i].applyPatch(this.dllFile);
-        /* disabled as it can get kinda hectic with many patches
-        if(enabledStr) {
-            fname += '-' + enabledStr;
-        } */
+        this.mods[i].applyPatch(this.dllFile);
     }
     fname += '.dll';
-    
+
     var blob = new Blob([this.dllFile], {type: "application/octet-stream"});
     saveAs(blob, fname);
 }
